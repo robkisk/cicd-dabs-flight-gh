@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=bundle_config_schema.json
+
+# This is a Databricks asset bundle definition for datakickstart_dabs.
+# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+bundle:
+  name: flights_e2e
+
+# run_as:
+#   service_principal_name: 44dce1ec-a6a3-4f4e-9fb7-0bf9de2addd5
+
+include:
+  - resources/*.yml
+  - resources/dlt/*.yml
+
+variables:
+  catalog:
+    default: "bu1_dev"
+  database:
+    default: "flights_dev"
+  flights_dlt_schema:
+    default: "flights_dev"
+  flights_test_schema:
+    default: "flights_validation_dev"
+  spark_version:
+    default: "15.4.x-photon-scala2.12"
+  node_type_id:
+    default: "Standard_D3_v2"
+
+targets:
+  # Whenever a developer deploys using 'dev', they get their own copy.
+  dev:
+    # We use 'mode: development' to make sure everything deployed to this target gets a prefix
+    # like '[dev my_user_name]'. Setting this mode also disables any schedules and
+    # automatic triggers for jobs and enables the 'development' mode for Delta Live Tables pipelines.
+    mode: development
+    default: true
+    workspace:
+      host: <dev_host>
+      # We explicitly specify /Workspace/Users/robby.kiskanyan@databricks.com to make sure we only have a single copy.
+      root_path: /Workspace/Users/robby.kiskanyan@databricks.com/.bundle/${bundle.name}/${bundle.target}
+    permissions:
+      - user_name: robby.kiskanyan@databricks.com
+        level: CAN_MANAGE
+    # run_as:
+    #   user_name: robby.kiskanyan@databricks.com
+    run_as:
+      user_name: ${workspace.current_user.userName}
+
+  staging:
+    # For staging deployments, we only have a single copy, so we override the
+    # workspace.root_path default of
+    # /Users/${workspace.current_user.userName}/.bundle/${bundle.target}/${bundle.name}
+    mode: production
+    workspace:
+      host: <staging_host>
+      # root_path: /Workspace/Users/robby.kiskanyan@databricks.com/.bundle/${bundle.name}/${bundle.target}
+      # root_path: /Shared/staging-workspace/.bundle/${bundle.name}/${bundle.target}
+      # root_path: /Shared/.bundle/${bundle.target}/${bundle.name}
+      # root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/my-envs/${bundle.target}
+    # run_as:
+    #   user_name: robby.kiskanyan@databricks.com
+    run_as:
+      service_principal_name: <staging_spn>
+    variables:
+      catalog: bu1_qa
+      database: flights_staging
+      flights_test_schema: flights_validation_staging
+      flights_dlt_schema: flights_staging
+
+  # The 'prod' target, used for production deployment.
+  prod:
+    # For production deployments, we only have a single copy, so we override the
+    # /Users/${workspace.current_user.userName}/.bundle/${bundle.target}/${bundle.name}
+    # to a path that is not specific to the current user.
+    mode: production
+    workspace:
+      host: <prod_host>
+      # root_path: /Shared/production-workspace/.bundle/${bundle.name}/${bundle.target}
+      # root_path: /Workspace/Users/robby.kiskanyan@databricks.com/.bundle/${bundle.name}/${bundle.target}
+      # root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/my-envs/${bundle.target}
+      # root_path: /Shared/.bundle/${bundle.target}/${bundle.name}
+    # permissions:
+    #   - user_name: robby.kiskanyan@databricks.com
+    #     level: CAN_MANAGE
+    # only for local testing
+    # run_as:
+    #   user_name: robby.kiskanyan@databricks.com
+    run_as:
+      service_principal_name: <prod_spn>
+    # run_as:
+    #   user_name: ${workspace.current_user.userName}
+    variables:
+      catalog: bu1_prod
+      database: flights_prod
+      flights_test_schema: flights_validation_prod
+      flights_dlt_schema: flights_prod

@@ -1,0 +1,195 @@
+trigger:
+  branches:
+    include:
+      - main
+
+stages:
+  - stage: PRValidation
+    displayName: "Pull Request Validation"
+    variables:
+      - group: StgVariables
+    condition: |
+      and
+      (
+        succeeded(),
+        eq(variables['Build.Reason'], 'PullRequest'),
+        eq(variables['System.PullRequest.TargetBranch'], 'refs/heads/main'),
+        not(startsWith(variables['System.PullRequest.SourceBranch'], 'refs/heads/release')),
+        ne(variables['System.PullRequest.PullRequestId'], ''),
+        startsWith(variables['System.PullRequest.SourceBranch'], 'refs/heads/feature/')
+      )
+    jobs:
+      - job: Integration_Test_and_Build
+        displayName: "Run Integration Tests and Build"
+        variables:
+          - group: StgVariables
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - script: env | sort
+            displayName: "Environment / Context"
+          - task: UsePythonVersion@0
+            displayName: "Use Python 3.11"
+            inputs:
+              versionSpec: 3.11
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: devops_sp_staging
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                echo "Getting access token..."
+                DATABRICKS_TOKEN=$(az account get-access-token --resource 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d --query "accessToken" -o tsv)
+                echo "##vso[task.setvariable variable=DATABRICKS_TOKEN]$DATABRICKS_TOKEN"
+          - checkout: self
+            displayName: "Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)"
+            persistCredentials: true
+            clean: true
+          - script: |
+              python -m pip install wheel
+              python -m pip install -r requirements.txt
+              python -m pip install databricks-connect==15.3
+            displayName: "Install dependencies"
+          - script: |
+              echo Install the Databricks CLI...
+              curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+            displayName: "Install the Databricks CLI"
+          - script: |
+              echo Configuring the Databricks CLI...
+              databricks configure --token
+              echo -e "[DATABRICKS_HOST]\n[DATABRICKS_TOKEN]" | databricks configure --token
+            env:
+              DATABRICKS_HOST: $(DATABRICKS_HOST)
+              DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+            displayName: "Configuring the Databricks CLI"
+          - script: pytest tests/ -p no:warnings
+            env:
+              DATABRICKS_HOST: $(DATABRICKS_HOST)
+              DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+            displayName: "Run tests"
+          - script: |
+              databricks bundle validate -t staging
+            displayName: Validate bundle for $(env) enviroment
+          - script: |
+              echo Deploy the bundle via Databricks CLI...
+              databricks bundle deploy -t staging
+            displayName: Deploy job on $(env) enviroment
+          - script: |
+              echo Running job
+              databricks bundle run notebook_validation_job -t staging
+            displayName: Run Notebook Validation in $(env) enviroment
+          - script: |
+              echo Running DLT pipeline
+              databricks bundle run flights_dlt_job -t staging
+            displayName: Run simpleworkflow on $(env) enviroment
+
+      - job: ValidateBundleProd
+        displayName: "Validate Bundle in Prod Environment"
+        variables:
+          - group: PrdVariables
+        # condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+        dependsOn: [] # Removes the implicit dependency on previous job and force prodBundleCI job to run in parallel
+
+        steps:
+          - script: env | sort
+            displayName: "Environment / Context"
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: devops_sp_prod
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                echo "Getting access token..."
+                DATABRICKS_TOKEN=$(az account get-access-token --resource 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d --query "accessToken" -o tsv)
+                echo "##vso[task.setvariable variable=DATABRICKS_TOKEN]$DATABRICKS_TOKEN"
+
+          - checkout: self
+            displayName: "Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)"
+            persistCredentials: true
+            clean: true
+
+          - script: |
+              echo Install the Databricks CLI...
+              curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+            displayName: "Install the Databricks CLI"
+
+          - script: |
+              echo Configuring the Databricks CLI...
+              databricks configure --token
+              echo -e "[DATABRICKS_HOST]\n[DATABRICKS_TOKEN]" | databricks configure --token
+            env:
+              DATABRICKS_HOST: $(DATABRICKS_HOST)
+              DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+            displayName: "Configuring the Databricks CLI"
+
+          - script: |
+              databricks bundle validate -t prod
+            # workingDirectory: $(workingDirectory)
+            displayName: "Validate bundle for prod"
+
+  # Run StagingBundleCD stage after successfully merging into the main branch
+  - stage: PrdBundleCD
+    displayName: "Prod bundle deployment after merging to main"
+    variables:
+      - group: PrdVariables
+    condition: eq(variables['Build.SourceBranch'], 'refs/heads/main')
+    # condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: ProdBundleDeploy
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - script: echo "Deploying to staging after merge"
+            displayName: "Prod Deployment"
+          - script: env | sort
+            displayName: "Environment / Context"
+
+          - task: UsePythonVersion@0
+            displayName: "Use Python 3.11"
+            inputs:
+              versionSpec: 3.11
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: devops_sp_prod
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                echo "Getting access token..."
+                DATABRICKS_TOKEN=$(az account get-access-token --resource 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d --query "accessToken" -o tsv)
+                echo "##vso[task.setvariable variable=DATABRICKS_TOKEN]$DATABRICKS_TOKEN"
+
+          - checkout: self
+            displayName: "Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)"
+            persistCredentials: true
+            clean: true
+
+          - script: |
+              python -m pip install wheel
+              python -m pip install -r requirements.txt
+              python -m pip install databricks-connect==15.3
+            displayName: "Install dependencies"
+
+          - script: |
+              echo Install the Databricks CLI...
+              curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+            displayName: "Install the Databricks CLI"
+
+          - script: |
+              echo Configuring the Databricks CLI...
+              databricks configure --token
+              echo -e "[DATABRICKS_HOST]\n[DATABRICKS_TOKEN]" | databricks configure --token
+            env:
+              DATABRICKS_HOST: $(DATABRICKS_HOST)
+              DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+            displayName: "Configuring the Databricks CLI"
+
+          - script: |
+              databricks bundle validate -t prod
+            displayName: Validate bundle for $(env) enviroment
+
+          - script: |
+              echo Deploy the bundle via Databricks CLI...
+              databricks bundle deploy -t prod
+            displayName: Deploy job on $(env) enviroment
