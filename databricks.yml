@@ -6,7 +6,7 @@ bundle:
   name: flights_e2e
 
 # run_as:
-#   service_principal_name: 44dce1ec-a6a3-4f4e-9fb7-0bf9de2addd5
+#   service_principal_name: <add_spn_here>
 
 include:
   - resources/*.yml
